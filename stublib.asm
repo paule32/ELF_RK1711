@@ -40,171 +40,145 @@
 ;               |  +------ argv[1]
 ;               +--------- argv[0]  (shall include path name + program name)
 ; -----------------------------------------------------------------------------
-section .data
-buffer1: db "PEMO", 0
-
-fail_openkernel_str:  db "kernel32.dll could not be open.",10,0
-fail_openkernel_len   equ $ - fail_openkernel_str
-;
-erro_openkernel_str:  db "kernel32.dll internal error.",10,0
-erro_openkernel_len   equ $ - erro_openkernel_str
-;
-succ_openkernel_str:  db "kernel32.dll is open.",10,0
-succ_openkernel_len   equ $ - succ_openkernel_str
-;
-fail_readkernel_str:  db "kernel32.dll read 5 bytes fail.",10,0
-fail_readkernel_len   equ $ - fail_readkernel_str
-;
-succ_readkernel_str:  db "kernel32.dll read 5 bytes ok.",10,0
-succ_readkernel_len   equ $ - succ_readkernel_str
-
-
-section .text
-global _start
+    section .text
 _start:
-
         sys_prolog
         sys_getcmdline_args
+        
+        mov     esi, [ebp + 8]  ; argv[0]
 
-;        sys_strlen module_hdr + m_magic
-;        sys_write stdout, esi, edx
+        mov     ecx, 0          ; counter; string is in ESI
+.repeat:
+        lodsb                   ; load string byte by byte
+        test    al, al          ; check if zero (terminator \0
+        jz      .done           ; yes, we done the loop
 
-
-
-call _callfunc_test1_kernel32
-
+        inc     ecx             ; increment counter
+        jmp     .repeat         ; loop
 .done:
-mov eax, SYS_EXIT
-mov ebx, 0
-int 0x80
-ret
+        mov     edx, ecx        ; string length
+        mov     esi, [ebp + 8]  ; the string itself
+        mov     ebx, stdout     ; output goes to console
+        call    sys_write
 
-_callfunc_test1_kernel32:
-;
-; open: "kernel32.dll"
-mov edx, O_RDONLY
-mov ecx, O_RDONLY
-mov ebx, kernel32_dll           ; string of module
-mov eax, SYS_OPEN
-int 0x80
-cmp eax, 0
-jge .file_openok                ; error ?
-mov edx, fail_openkernel_len
-mov ecx, fail_openkernel_str
-mov ebx, stdout
-mov eax, SYS_WRITE
-int 0x80
-ret
-.file_openok:
-mov [kernel32_dll_file_desc], eax
-cmp eax, 0
-jge .print_ok_kernel
-mov edx, erro_openkernel_len
-mov ecx, erro_openkernel_str
-mov ebx, stdout
-mov eax, SYS_WRITE
-int 0x80
-ret
-.print_ok_kernel:
-mov edx, succ_openkernel_len
-mov ecx, succ_openkernel_str
-mov ebx, stdout
-mov eax, SYS_WRITE
-int 0x80
-;
-; read: m_magic: 5 bytes
-mov ebx, [kernel32_dll_file_desc]
-mov ecx, module_m_magic
-mov edx, 5
-mov eax, SYS_READ
-int 0x80
-cmp eax, -1
-jg .file_read_ok
-mov edx, fail_readkernel_len
-mov ecx, fail_readkernel_str
-mov ebx, stdout
-mov eax, SYS_WRITE
-int 0x80
-ret
-.file_read_ok:
-mov edx, succ_readkernel_len
-mov ecx, succ_readkernel_str
-mov ebx, stdout
-mov eax, SYS_WRITE
-int 0x80
-ret
-;
-; read: m_version: 3 bytes (3 x db)
-mov ebx, [kernel32_dll_file_desc]
-mov ecx, module_m_version
-mov edx, 3
-mov eax, SYS_READ
-int 0x80
-;
-; read: m_filesize: 4 bytes (1 x dd)
-mov ebx, [kernel32_dll_file_desc]
-mov ecx, module_m_filesize
-mov edx, 4
-mov eax, SYS_READ
-int 0x80
-;
-; read: m_functions: 4 bytes (1 x dd)
-mov ebx, [kernel32_dll_file_desc]
-mov ecx, module_m_functions
-mov edx, 4
-mov eax, SYS_READ
-int 0x80
-;
-; read: m_entry: 4 bytes (1 x xdd)
-mov ebx, [kernel32_dll_file_desc]
-mov ecx, module_m_entry
-mov edx, 4
-mov eax, SYS_READ
-int 0x80
+        ; -------------------------------------
+        ; open argv[0], name is in EBX
+        ; with read-only flag.
+        ; return value in EAX will have file
+        ; descriptor on success ...
+        ; -------------------------------------
+        mov      edx, [ebp + 8]
+        sys_open edx, O_RDONLY, O_RDONLY, file_desc
 
-;
-; write
-mov edx, 5              ; first 5 bytes of magic
-mov esi, module_m_magic
-mov ebx, stdout
-mov eax, SYS_WRITE
-int 0x80
-.done:
-        ret
+        jmp     .error          ; there was an error, errno saved in EAX
+.file_ok:
+        mov     [file_desc], eax  ; save file descriptor from EAX
+
+        ; ----------------------------------------------------
+        ; for write the attachment:
+        ; create file with (-rwxr-xr-x) access rights ...
+        ;
+        ; access modes of new file:
+        ;   1 = --x,            |   r := read
+        ;   5 = --r-x,          |   w := write
+        ;   6 = --r,            |   x := exec
+        ;   7 = --r-x,          |
+        ;  15 = -xr-x           |   all access flag in octal !
+        ; 127 = ---xr-xr-x,     |
+        ; 128 = --w-------      |
+        ; 255 = --wxr-xr-x,     |
+        ; 256 = -r--------      |
+        ; 511 = -rwxr-xr-x,     |
+        ; 512 = ---------T      |
+        ; 666 = --w---x--T,     |
+        ; 755 = --wxr----t      |
+        ; ----------------------------------------------------
+%ifdef DEBUG_TEST
+        sys_creat tmp_file, 0o750                           ; access right
+        sys_open  tmp_file, O_WRONLY, O_WRONLY, tmp_desc
+
+        test    eax, eax
+        jns     .file_ok2
+
+        jmp     .error
+.file_ok2:
+        mov     [tmp_desc], eax ; save file descriptor
+%endif
+        ; ---------------------------------
+        ; seek to stub file size position,
+        ; and read the attachment ...
+        ; ---------------------------------
+        sys_lseek file_desc, filesize, SEEK_SET
+
+; -----------------------------------------------------------------------------
+; for test the kernel, may removed at later time ...
+; -----------------------------------------------------------------------------
+        jmp     .jumper           ; over jump nex code (peephole)
+%ifdef DEBUG_TEST
+.read2:
+        mov     ebx, [file_desc]   ; sys_open returned fd in EAX (input fd)
+        mov     ecx, char_buff     ; buffer
+        mov     edx, 1             ; count read (1 byte)
+        call    sys_read           ; "read" kernel call
+        cmp     eax, 0             ; check if pointer EOF, or null-byte
+        jle     .is_eof            ; yes, close file
+        ;
+        mov     ebx, [tmp_desc]    ; ramfs file descriptor
+        mov     ecx, char_buff     ; buffer
+        mov     edx, 1             ; buffer size
+        call    sys_write
+        jmp     .read2             ; else, read next char
+%endif
+.jumper:
+        call    dll_entry
+.is_eof:
+        syscall SYS_SYNC, nop      ; write buffers
+
+; -----------------------------------------------------------------------------
+; Linux close file descriptors automatically at end of exec. or process
+; -----------------------------------------------------------------------------
+        sys_close tmp_desc
+        sys_close file_desc
+.error:
+        sys_exit  0            ; should be exit the program without segfault err.
 
 ; -----------------------------------------------------------------------------
 ; data segment - moved to the end of code
 ; -----------------------------------------------------------------------------
     section .data
-error_text:
-error_msg cant_loadstub_msg, "error", 10, 0
-error_msg sys_open_error_str, "file can't be open", 0
-error_msg sys_cmp_error_str, "buffers not equal", 0
-error_msg sys_txt_test,"alles ok",0
+;tmp_file               db "/tmp/stub.tmp", 0
+;tmp_file_len           equ $ - tmp_file
 
-kernel32_dll_file_desc: dd 0
+cant_loadstub_msg       db "error", 10, 0
+cant_loadstub_msg_len   equ $ - cant_loadstub_msg
+
+file_desc:  dd 0
 tmp_desc:   dd 0
 
 ; -----------------------------------------------------------------------------
 ; bss segment - null data: static allocated memory ...
 ; -----------------------------------------------------------------------------
     section .bss
-char_buff:   resb  1
-temp_buffer: resb (1024 * 20)  ; 2 MegaByte
-
-; module header
-module_m_magic      resb 5
-module_m_version    resb 3
-module_m_filesize   resd 1
-module_m_functions  resd 1
-module_m_entry      resd 1
+char_buff: resb 1
 
 ; -----------------------------------------------------------------------------
 ; E-O-F  - End Of File (stub) ...
 ; -----------------------------------------------------------------------------
 filesize    equ $ - $$
 
+
+; -----------------------------------------------------------------------------
+; now, attachment follows ...
+; -----------------------------------------------------------------------------
+section .text
+dll_entry:
+        jmp     .main
+
+.main:  ret
+
+
 section .data
+
 ; -----------------------------------------------------------------------------
 ; program dependcies: DLL + function name(s) ...
 ; -----------------------------------------------------------------------------
@@ -216,6 +190,6 @@ section .data
 ; DLL import/include .data ...
 ; -----------------------------------------------------------------------------
 %ifdef KERNEL32_DLL
-%include "kernel32_mod.asm"
+%include "kernel32.asm"
 %endif
 

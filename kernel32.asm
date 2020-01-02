@@ -22,9 +22,9 @@
 ; SOFTWARE.
 ; -----------------------------------------------------------------------------
 
-section .text
+    section .text
 module_header:
-        db "BABL", 0        ; file header := PE module
+        db "PEDEL", 0       ; file header := PE module
         db 1,0,0            ; version
 image_begin:
         dd mod_filesize     ; image size
@@ -35,18 +35,27 @@ mod_entry:
         nop
         ret
 
-entry_test1:
+kernel32_entry_test1:
+        nop
         ret
-entry_test2:
+kernel32_entry_test2:
+        nop
         ret
 
-section .data
+; -----------------------------------------------------------------------------
+; important data address ...
+; -----------------------------------------------------------------------------
+    section .data
 mod_functions:
-        db "test1", 0, 1    ; 0 = unknown, 1 = func, 2 = var
-        dd entry_test1
-        ;
-        db "test2", 0, 1    ; 0 = unknown, 1 = func, 2 = var
-        dd entry_test2
+        dd kernel32_entry_test1, __imp__kernel32_entry_test1_str
+        dd kernel32_entry_test2, __imp__kernel32_entry_test2_str
+mod_fun_hdr_end  equ $ - mod_functions
+
+__imp__kernel32_entry_test1_str:
+        db "test1", 0
+
+__imp__kernel32_entry_test2_str:
+        db "test2", 0
 
 ; -----------------------------------------------------------------------------
 ; E-O-F  end of file
